@@ -15,6 +15,7 @@ import urllib.error as urlerror
 import urllib.request as urlreq
 import astropy.units as u
 import sunpy.timeseries as ts
+from sunpy.util import MetaDict
 import warnings
 import collections as coll
 import cdflib
@@ -190,8 +191,24 @@ def process(dirs, fnames, extension, local_base_dir, remote_base_url,
     if extension == '.cdf':
         cdf = _load_local(raw_file_path)
         units = cdf_units(cdf, manual_units=units)
-    return units_attach(data, units, warn_missing_units=warn_missing_units)
+    data = units_attach(data, units, warn_missing_units=warn_missing_units)
+    
+    if extension == '.cdf':
+        atts = cdf_varatts(cdf)
+#        print(atts.keys())
+        tr = data.meta.time_range
+        tmd = None
+        for c in data.columns:
+            if tmd is None:
+                tmd = ts.TimeSeriesMetaData(timerange=tr, colnames=[c],
+                                            meta=MetaDict(atts[c]))
+            else:
+                tmd.append(tr, [c], MetaDict(atts[c]))
 
+    return ts.GenericTimeSeries(data.to_dataframe(),
+                                units=data.units, meta=tmd)
+
+    return data
 
 def _file_match(directory, fname_regex):
     """
@@ -350,8 +367,69 @@ def cdf_units(cdf_, manual_units=None, length=None):
                 units.update(coll.OrderedDict.fromkeys(val, temp_unit))
             else:
                 units[val] = temp_unit
+        else:
+            print(val,unit_str)
     units.update(manual_units)
     return units
+
+def cdf_varatts(cdf_, length=None):
+    """
+    Takes the CDF File and the required keys, and finds the units of the
+    selected keys.
+
+    Parameters
+    ----------
+    cdf_ : cdf
+        Opened cdf file
+    manual_units : ~collections.OrderedDict, optional
+        Manually defined units to be attached to the data that will be
+        returned.
+
+    Returns
+    -------
+    out : :class:`collections.OrderedDict`
+        Returns an OrderedDict with units of the selected keys.
+    """
+    key_dict = {}
+    var_list = []
+    att_list = coll.OrderedDict()
+    # To figure out whether rVariable or zVariable needs to be taken
+    for attr in list(cdf_.cdf_info().keys()):
+        if 'variable' in attr.lower():
+            if len(cdf_.cdf_info()[attr]) > 0:
+                var_list += [attr]
+
+    # Extract the list of valid keys in the zVar or rVar
+    for attr in var_list:
+        for key in cdf_.cdf_info()[attr]:
+            try:
+                y = cdf_.varget(key)
+                ncols = y.shape
+                if len(ncols) == 1:
+                    key_dict[key] = key
+                if len(ncols) > 1:
+                    val = []
+                    val.append(key)
+                    for x in range(0, ncols[1]):
+                        field = key + "{}".format('_' + str(x))
+                        val.append(field)
+                    key_dict[key] = val
+            except Exception as e:
+                print("{}-Variable{}".format(e, key))
+                continue
+
+    # Assigning units to the keys
+    for key, val in key_dict.items():
+        unit_str = None
+        temp_unit = None
+        atts = cdf_.varattsget(key)
+        if isinstance(val, list):
+            att_list.update(coll.OrderedDict.fromkeys(val, atts))
+        else:
+            att_list[val] = atts
+
+    return att_list
+
 
 
 def timefilter(data, starttime, endtime):
